@@ -1,3 +1,28 @@
+"""
+If having trouble due to system clock not being UTC, set this env before running runtests:
+       DJSTRIPE_TESTS_SKIP_UTC_TESTS="True"
+
+If you need to skip the coverage test (e.g. it apparently interferes with the debugger in PyCharm):
+       DJSTRIPE_TESTS_SKIP_COVERAGE="True"
+
+If you need to skip the pep8 test
+       DJSTRIPE_TESTS_SKIP_PEP8="True"
+
+
+Rather than making these options permanent in your environment, it is recommended you run like this (which sets env
+for just one command):
+
+   DJSTRIPE_TESTS_SKIP_COVERAGE=True python runtests.py
+
+
+---
+Why are these environment variables and not command line options?? Because cmd line options are hard/impossible/hack
+when using nosetests (according to various online discussions on the topic).
+---
+"""
+
+from distutils.util import strtobool
+
 import os
 import sys
 
@@ -7,9 +32,13 @@ from django.conf import settings
 from coverage import coverage
 from termcolor import colored
 
-cov = coverage(config_file=True)
-cov.erase()
-cov.start()
+disable_coverage = strtobool(os.environ.get('DJSTRIPE_TESTS_SKIP_COVERAGE', "False"))
+disable_pep8 = strtobool(os.environ.get('DJSTRIPE_TESTS_SKIP_PEP8', "False"))
+
+if not disable_coverage:
+    cov = coverage(config_file=True)
+    cov.erase()
+    cov.start()
 
 TESTS_THRESHOLD = 100
 TESTS_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -45,6 +74,7 @@ settings.configure(
         "django.contrib.auth.middleware.AuthenticationMiddleware",
         "django.contrib.messages.middleware.MessageMiddleware"
     ),
+    NOSE_PLUGINS = ['nose.plugins.skip.Skip', ],
     SITE_ID=1,
     STRIPE_PUBLIC_KEY=os.environ.get("STRIPE_PUBLIC_KEY", ""),
     STRIPE_SECRET_KEY=os.environ.get("STRIPE_SECRET_KEY", ""),
@@ -149,34 +179,48 @@ failures = test_runner.run_tests(["."])
 if failures:
     sys.exit(failures)
 
-# Announce coverage run
-sys.stdout.write(colored(text="\nStep 2: Generating coverage results.\n\n", color="yellow", attrs=["bold"]))
+if not disable_coverage:
+    # Announce coverage run
+    sys.stdout.write(colored(text="\nStep 2: Generating coverage results.\n\n", color="yellow", attrs=["bold"]))
 
-cov.stop()
-percentage = round(cov.report(show_missing=True), 2)
-cov.html_report(directory='cover')
-cov.save()
+    cov.stop()
+    percentage = round(cov.report(show_missing=True), 2)
+    cov.html_report(directory='cover')
+    cov.save()
 
-if percentage < TESTS_THRESHOLD:
-            sys.stderr.write(colored(text="YOUR CHANGES HAVE CAUSED TEST COVERAGE TO DROP. " +
-                                     "WAS {old}%, IS NOW {new}%.\n\n".format(old=TESTS_THRESHOLD, new=percentage),
-                                     color="red", attrs=["bold"]))
-            sys.exit(1)
-
-# Announce flake8 run
-sys.stdout.write(colored(text="\nStep 3: Checking for pep8 errors.\n\n", color="yellow", attrs=["bold"]))
-
-print("pep8 errors:")
-print("----------------------------------------------------------------------")
-
-from subprocess import call
-flake_result = call(["flake8", ".", "--count"])
-if flake_result != 0:
-    sys.stderr.write("pep8 errors detected.\n")
-    sys.stderr.write(colored(text="\nYOUR CHANGES HAVE INTRODUCED PEP8 ERRORS!\n\n", color="red", attrs=["bold"]))
-    sys.exit(flake_result)
+    if percentage < TESTS_THRESHOLD:
+                sys.stderr.write(colored(text="YOUR CHANGES HAVE CAUSED TEST COVERAGE TO DROP. " +
+                                         "WAS {old}%, IS NOW {new}%.\n\n".format(old=TESTS_THRESHOLD, new=percentage),
+                                         color="red", attrs=["bold"]))
+                sys.exit(1)
 else:
-    print("None")
+    sys.stdout.write(colored(text="\nStep 2: Generating coverage results: SKIPPED due to environment "
+                                  "variable setting! \n\n", color="yellow", attrs=["bold"]))
+
+
+if disable_pep8:
+    sys.stdout.write(colored(text="\nStep 3: Checking for pep8 errors. SKIPPED due to environment "
+                                  "variable setting!\n\n", color="yellow", attrs=["bold"]))
+else:
+    # Announce flake8 run
+    sys.stdout.write(colored(text="\nStep 3: Checking for pep8 errors.\n\n", color="yellow", attrs=["bold"]))
+    print("pep8 errors:")
+    print("----------------------------------------------------------------------")
+
+    from subprocess import call
+    flake_result = call(["flake8", ".", "--count"])
+    if flake_result != 0:
+        sys.stderr.write("pep8 errors detected.\n")
+        sys.stderr.write(colored(text="\nYOUR CHANGES HAVE INTRODUCED PEP8 ERRORS!\n\n", color="red", attrs=["bold"]))
+        sys.exit(flake_result)
+    else:
+        print("None")
 
 # Announce success
-sys.stdout.write(colored(text="\nTests completed successfully with no errors. Congrats!\n", color="green", attrs=["bold"]))
+if disable_coverage or disable_pep8:
+    sys.stdout.write(colored(text="\nTests completed successfully, but some step(s) were skipped!\n",
+                             color="green", attrs=["bold"]))
+    sys.stdout.write(colored(text="Don't push without running the skipped step(s).\n",
+                             color="red", attrs=["bold"]))
+else:
+    sys.stdout.write(colored(text="\nTests completed successfully with no errors. Congrats!\n", color="green", attrs=["bold"]))
