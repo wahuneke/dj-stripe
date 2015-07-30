@@ -13,7 +13,7 @@ def sync_subscriber(subscriber):
     try:
         cu = customer.stripe_customer
         customer.sync(cu=cu)
-        customer.sync_current_subscription(cu=cu)
+        customer.sync_subscriptions(cu=cu)
         customer.sync_invoices(cu=cu)
         customer.sync_charges(cu=cu)
     except stripe.error.InvalidRequestError as e:
