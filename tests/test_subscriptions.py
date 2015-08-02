@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from mock import patch, PropertyMock, MagicMock
 
-from djstripe.exceptions import SubscriptionApiError, SubscriptionCancellationFailure
+from djstripe.exceptions import SubscriptionApiError, SubscriptionCancellationFailure, SubscriptionUpdateFailure
 from djstripe.models import convert_tstamp, Customer, Subscription
 from djstripe.settings import PAYMENTS_PLANS
 from tests import convert_to_fake_stripe_object
@@ -249,7 +249,7 @@ class TestMultipleSubscriptions(TestCase):
         self.assertEqual(self.customer.subscriptions.count(), 1)
         with self.assertRaises(Subscription.DoesNotExist):
             self.customer.subscriptions.get(plan="basic")
-
+        
     @patch("stripe.resource.Subscription.delete")
     @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
     def test_cancel_with_bad_stripe_sub(self, StripeCustomerMock, SubscriptionDeleteMock):
@@ -257,17 +257,17 @@ class TestMultipleSubscriptions(TestCase):
         SubscriptionDeleteMock.return_value = convert_to_fake_stripe_object(DUMMY_SUB_BASIC_CANCELED)
         create_subscription(self.customer)
         self.assertEqual(self.customer.subscriptions.count(), 1)
-
+    
         stripe_subscription = MagicMock()
         p = PropertyMock(return_value="not_sub_id")
         type(stripe_subscription).stripe_id = p
         p = PropertyMock(return_value=timezone.now() - datetime.timedelta(days=1))
         type(stripe_subscription).trial_end = p
-
+    
         self.customer.cancel_subscription(subscription=stripe_subscription)
-
+    
         self.assertEqual(self.customer.subscriptions.count(), 1)
-
+    
     def test_update_quantity_with_no_sub_param(self):
         with self.assertRaises(SubscriptionApiError):
             self.customer.update_plan_quantity(2)
@@ -284,6 +284,25 @@ class TestMultipleSubscriptions(TestCase):
         self.customer.update_plan_quantity(2, charge_immediately=False,
                                            subscription=self.customer.subscriptions.get(plan="basic"))
         self.assertEqual(self.customer.subscriptions.get(plan="basic").quantity, 2)
+
+    @patch("stripe.resource.Subscription.save")
+    @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
+    def test_update_quantity_badsub(self, StripeCustomerMock, SubscriptionSaveMock):
+        dummy_customer = copy.deepcopy(DUMMY_CUSTOMER_WITH_SUB_BASIC)
+        dummy_customer["subscriptions"]["data"][0]["quantity"] = 2
+        StripeCustomerMock.side_effect = [convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITH_SUB_BASIC),
+                                          convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITH_SUB_BASIC),
+                                          convert_to_fake_stripe_object(dummy_customer)]
+        create_subscription(self.customer)
+        stripe_subscription = MagicMock()
+        p = PropertyMock(return_value="not_sub_id")
+        type(stripe_subscription).stripe_id = p
+        with self.assertRaises(SubscriptionUpdateFailure):
+            self.customer.update_plan_quantity(2, charge_immediately=False,
+                                               subscription=stripe_subscription)
+        # didnt update anything, stripe_subscription matches nothing attached to this
+        # customer
+        self.assertEqual(self.customer.subscriptions.get(plan="basic").quantity, 1)
         
     @patch("stripe.resource.Subscription.save")
     @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
@@ -321,6 +340,23 @@ class TestMultipleSubscriptions(TestCase):
         Customer.retain_canceled_subscriptions = False
         self.customer.sync_subscriptions()
         self.assertEqual(self.customer.subscriptions.count(), 0)
+        
+    @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
+    def test_sync_with_no_subscriptions_multiple(self, StripeCustomerMock):
+        StripeCustomerMock.side_effect = [convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITHOUT_SUB)]
+        sub_basic = create_subscription(self.customer)
+        create_subscription(self.customer, "gold")
+        self.assertEqual(self.customer.subscriptions.count(), 2)
+        sub_basic.status = Subscription.STATUS_CANCELLED
+        sub_basic.save()
+        Customer.retain_canceled_subscriptions = True
+        self.customer.sync_subscriptions()
+        Customer.retain_canceled_subscriptions = False
+        self.assertEqual(self.customer.subscriptions.count(), 2)
+        sub_basic = self.customer.subscriptions.get(plan="basic")
+        self.assertEqual(sub_basic.status, Subscription.STATUS_CANCELLED)
+        sub_gold = self.customer.subscriptions.get(plan="gold")
+        self.assertEqual(sub_gold.status, Subscription.STATUS_CANCELLED)
 
 
 class TestSingleSubscription(TestCase):
@@ -441,6 +477,26 @@ class TestSingleSubscription(TestCase):
 
     @patch("stripe.resource.Subscription.delete")
     @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
+    def test_cancel_with_bad_stripe_sub(self, StripeCustomerMock, SubscriptionDeleteMock):
+        StripeCustomerMock.return_value = convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITH_SUB_BASIC)
+        SubscriptionDeleteMock.return_value = convert_to_fake_stripe_object(DUMMY_SUB_BASIC_CANCELED)
+        create_subscription(self.customer)
+        self.assertEqual(self.customer.subscriptions.count(), 1)
+        self.assertEqual(self.customer.current_subscription.status, "trialing")
+
+        stripe_subscription = MagicMock()
+        p = PropertyMock(return_value="not_sub_id")
+        type(stripe_subscription).stripe_id = p
+        p = PropertyMock(return_value=timezone.now() - datetime.timedelta(days=1))
+        type(stripe_subscription).trial_end = p
+
+        self.customer.cancel_subscription(subscription=stripe_subscription)
+
+        self.assertEqual(self.customer.subscriptions.count(), 1)
+        self.assertEqual(self.customer.current_subscription.status, "trialing")
+    
+    @patch("stripe.resource.Subscription.delete")
+    @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
     def test_cancel_with_stripe_sub_future(self, stripe_customer_mock, subscription_delete_mock):
         stripe_customer_mock.return_value = convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITH_SUB_BASIC)
         subscription_delete_mock.return_value = convert_to_fake_stripe_object(DUMMY_SUB_BASIC_CANCELED)
@@ -464,6 +520,13 @@ class TestSingleSubscription(TestCase):
         create_subscription(self.customer)
         self.customer.update_plan_quantity(2, charge_immediately=False)
         self.assertEqual(self.customer.current_subscription.quantity, 2)
+
+    @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)
+    def test_update_no_stripe_sub(self, StripeCustomerMock):
+        StripeCustomerMock.return_value = convert_to_fake_stripe_object(DUMMY_CUSTOMER_WITHOUT_SUB)
+        create_subscription(self.customer)
+        with self.assertRaises(SubscriptionUpdateFailure):
+            self.customer.update_plan_quantity(2)
 
     @patch("stripe.resource.Customer.update_subscription")
     @patch("djstripe.models.Customer.stripe_customer", new_callable=PropertyMock)

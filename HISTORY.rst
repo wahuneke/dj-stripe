@@ -5,7 +5,10 @@ History
 
 0.7.0 (2015-08-??)
 ---------------------
-* djstripe now responds to the invoice.created event (Thanks @wahuneke)
+* dj-stripe now responds to the invoice.created event (Thanks @wahuneke)
+* dj-stripe now cancels subscriptions and purges customers during sync if they were deleted from the stripe dashboard (Thanks @unformatt)
+* dj-stripe now checks for an active stripe subscription in the ``update_plan_quantity`` call (Thanks @ctrengove)
+* Event processing is now handled by "event handlers" - functions outside of models that respond to various event types and subtypes. Documentation on how to tie into the event handler system coming soon. (Thanks @wahuneke)
 
 0.6.0 (2015-07-12)
 ---------------------
