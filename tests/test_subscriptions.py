@@ -316,8 +316,9 @@ class TestMultipleSubscriptions(TestCase):
         stripe_subscription = MagicMock()
         p = PropertyMock(return_value="not_sub_id")
         type(stripe_subscription).stripe_id = p
-        self.customer.update_plan_quantity(2, charge_immediately=False,
-                                           subscription=stripe_subscription)
+        with self.assertRaises(SubscriptionUpdateFailure):
+            self.customer.update_plan_quantity(2, charge_immediately=False,
+                                               subscription=stripe_subscription)
         # didnt update anything, stripe_subscription matches nothing attached to this
         # customer
         self.assertEqual(self.customer.subscriptions.get(plan="basic").quantity, 1)
